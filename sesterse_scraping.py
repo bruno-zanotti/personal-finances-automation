@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 
 import os
+import sys
 import time
 import logging
-
+from pathlib import Path
 
 from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,62 +23,85 @@ logging.basicConfig(
     datefmt="%d/%m/%Y %H:%M:%S",
 )
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
-# Load environment variables from .env file
 load_dotenv()
 
-SESTERCE_GROUP_ID = os.getenv("SESTERCE_GROUP_ID")
+SESTERCE_GROUP_ID = os.getenv("SESTERCE_2026_GROUP_ID")
 SESTERCE_GROUP_PASSWORD = os.getenv("SESTERCE_GROUP_PASSWORD")
-GROUP_URL = "https://app.sesterce.io/groups/" + SESTERCE_GROUP_ID + "/share"
 
-""" This script uses Selenium to automate the process of logging into a Sesterce group and downloading a CSV file."""
+if not SESTERCE_GROUP_ID or not SESTERCE_GROUP_PASSWORD:
+    logger.error("Missing environment variables. Check your .env file.")
+    sys.exit(1)
+
+GROUP_URL = f"https://app.sesterce.io/groups/{SESTERCE_GROUP_ID}/share"
+
+
+def create_driver(download_dir: Path) -> webdriver.Chrome:
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--window-size=1920,1080")
+
+    prefs = {
+        "download.default_directory": str(download_dir),
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
+    }
+
+    chrome_options.add_experimental_option("prefs", prefs)
+
+    service = Service(ChromeDriverManager().install())
+
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+
+    # Required to allow downloads in headless mode
+    driver.execute_cdp_cmd(
+        "Page.setDownloadBehavior",
+        {"behavior": "allow", "downloadPath": str(download_dir)},
+    )
+
+    return driver
 
 
 def main():
-    # Set up the Chrome WebDriver
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    download_dir = Path(__file__).resolve().parent / "downloads"
+    download_dir.mkdir(exist_ok=True)
 
-    # Initialize the WebDriver in headless mode
-    driver = webdriver.Chrome(options=chrome_options)
+    driver = create_driver(download_dir)
 
     try:
-        # Open the Sesterce group URL
+        logger.info("Opening Sesterce group page...")
         driver.get(GROUP_URL)
 
-        # Search for the password field
-        password_field = WebDriverWait(driver, 5).until(
+        password_field = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "password"))
         )
 
-        # Introduce the password
         password_field.send_keys(SESTERCE_GROUP_PASSWORD)
-
-        # Submit the first form
         password_field.send_keys(Keys.RETURN)
 
-        # Search button "Exportar datos"
-        buttons = WebDriverWait(driver, 5).until(
+        buttons = WebDriverWait(driver, 10).until(
             EC.presence_of_all_elements_located(
                 (By.CSS_SELECTOR, "button.ses-button--full-width.ses-button-arrow")
             )
         )
-        # There are two buttons, the first one is "Enviar un resumen" and the second one is "Exportar datos"
+
         if len(buttons) >= 2:
-            export_button = buttons[1]
-            export_button.click()
-            time.sleep(1)
-            logger.info("The CSV file has been successfully downloaded.")
+            logger.info("Clicking export button...")
+            buttons[1].click()
+
+            time.sleep(5)  # Wait for download to complete
+            logger.info("CSV download triggered.")
         else:
-            logger.error("Buttons not found or not enough buttons available.")
+            logger.error("Export button not found.")
 
     except Exception as e:
-        logger.error("Button not found or failed to click:\n", e)
+        logger.exception(f"Scraping failed: {e}")
 
     finally:
-        # Close the WebDriver
         driver.quit()
+        logger.info("Driver closed.")
 
 
 if __name__ == "__main__":
